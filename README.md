@@ -18,6 +18,14 @@ An AI-powered video analysis tool that automatically extracts the most **viral-w
 
 ---
 
+## 🎥 Project Demo
+
+Check out the project in action: [**Viral Clipper Demo (Google Drive)**](https://drive.google.com/drive/folders/1CyoE1nd4VsQglYkOToUj8uBzNPTKEqFi?usp=drive_link)
+
+---
+
+---
+
 ## 🧱 Tech Stack
 
 | Layer | Tech |
