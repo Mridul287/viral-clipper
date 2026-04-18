@@ -133,6 +133,114 @@ async def upload(
 
 
 # ---------------------------------------------------------------------------
+# POST /reframe
+# ---------------------------------------------------------------------------
+
+@app.post("/reframe")
+async def reframe(
+    background_tasks: BackgroundTasks,
+    file: Optional[UploadFile] = File(default=None),
+    url: Optional[str] = Form(default=None)
+):
+    """
+    Accepts a video file or URL and reframes it to vertical using FaceTracker.
+    Returns a job_id and streams the result back.
+    """
+    import reframe as reframer
+    import yt_dlp
+    
+    job_id = str(uuid.uuid4())
+    
+    # ---- URL logic ----
+    if url and not file:
+        job_store.create_job(job_id)
+        job_store.update_job(job_id, status="reframing", progress_percent=10)
+        
+        def do_reframe_url():
+            try:
+                ydl_opts = {
+                    'format': 'best',
+                    'outtmpl': str(TEMP_DIR / f"{job_id}_raw.%(ext)s"),
+                    'noplaylist': True,
+                    'quiet': True,
+                    'no_warnings': True,
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    ext = info.get('ext', 'mp4')
+                    dest = str(TEMP_DIR / f"{job_id}_raw.{ext}")
+                
+                out_path = str(TEMP_DIR / f"{job_id}_vertical.{ext}")
+                res = reframer.reframe_clip(dest, job_id, out_path)
+                
+                out_rel = pathlib.Path(out_path).name
+                job_store.update_job(
+                    job_id,
+                    status="done",
+                    progress_percent=100,
+                    result={"url": f"/api/temp/{out_rel}", "meta": res}
+                )
+            except Exception as e:
+                job_store.update_job(job_id, status="failed", error=str(e))
+                
+        background_tasks.add_task(do_reframe_url)
+        return {
+            "job_id": job_id,
+            "status": "queued",
+            "message": f"Reframe URL job queued. Poll /status/{job_id} for updates.",
+        }
+
+    # ---- File Logic ----
+    if file:
+        suffix = pathlib.Path(file.filename).suffix.lower()
+
+        if suffix not in SUPPORTED_EXTENSIONS:
+            return _error(
+                f"Unsupported file format '{suffix}'. Allowed: {sorted(SUPPORTED_EXTENSIONS)}",
+                400,
+            )
+
+        # Stream to disk 
+        dest = TEMP_DIR / f"{job_id}_raw{suffix}"
+        try:
+            with open(dest, "wb") as f_out:
+                while chunk := await file.read(1024 * 1024):
+                    f_out.write(chunk)
+        except Exception as e:
+            dest.unlink(missing_ok=True)
+            return _error(f"Upload failed: {str(e)}", 500)
+
+        job_store.create_job(job_id)
+        job_store.update_job(job_id, status="reframing", progress_percent=15)
+        
+        def do_reframe_file():
+            try:
+                out_path = str(TEMP_DIR / f"{job_id}_vertical{suffix}")
+                res = reframer.reframe_clip(str(dest), job_id, out_path)
+                
+                # Form final URL for download
+                out_rel = pathlib.Path(out_path).name
+                job_store.update_job(
+                    job_id,
+                    status="done",
+                    progress_percent=100,
+                    result={"url": f"/api/temp/{out_rel}", "meta": res}
+                )
+            except Exception as e:
+                job_store.update_job(job_id, status="failed", error=str(e))
+                
+        background_tasks.add_task(do_reframe_file)
+        
+        return {
+            "job_id": job_id,
+            "status": "queued",
+            "message": f"Reframe job queued. Poll /status/{job_id} for updates.",
+        }
+        
+    return _error("Provide either a 'file' (multipart) or a 'url' (form field).", 422)
+
+
+# ---------------------------------------------------------------------------
 # GET /status/{job_id}
 # ---------------------------------------------------------------------------
 

@@ -1,50 +1,112 @@
 import os
-import uuid
+import json
 import pathlib
-import moviepy as mp
+import subprocess
 import yt_dlp
+import imageio_ffmpeg
 from typing import Dict, Any
+
+# Use the bundled ffmpeg from imageio_ffmpeg — works even without system ffmpeg.
+_FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
 SUPPORTED_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mp3', '.wav'}
 TEMP_DIR = pathlib.Path("temp")
 
 def get_duration(file_path: str) -> float:
-    """Helper to get duration using moviepy."""
+    """
+    Probe video/audio duration using ffmpeg directly.
+    Avoids MoviePy's broken AudioFileClip (KeyError: 'audio_bitrate' in v2.1.2).
+    """
     try:
-        with mp.VideoFileClip(file_path) as clip:
-            return float(clip.duration)
+        cmd = [
+            _FFMPEG.replace("ffmpeg", "ffprobe") if "ffprobe" in _FFMPEG else _FFMPEG,
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            str(file_path),
+        ]
+        # imageio_ffmpeg bundles ffmpeg only; use ffmpeg to probe instead
+        probe_cmd = [
+            _FFMPEG, "-i", str(file_path),
+            "-f", "null", "-",
+        ]
+        # Simpler: parse from ffmpeg stderr '-i' output
+        result = subprocess.run(
+            [_FFMPEG, "-i", str(file_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        import re
+        m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", stderr)
+        if m:
+            h, mn, s = int(m.group(1)), int(m.group(2)), float(m.group(3))
+            return h * 3600 + mn * 60 + s
     except Exception:
-        # Try as audio clip if video fails
-        try:
-            with mp.AudioFileClip(file_path) as clip:
-                return float(clip.duration)
-        except Exception:
-            return 0.0
+        pass
+    return 0.0
+
 
 def extract_audio(source_path: str, job_id: str) -> str:
     """
     Extracts audio from a given video/audio file and saves it
     as a 16kHz mono WAV file (required for Whisper).
+
+    Uses ffmpeg subprocess directly to avoid MoviePy 2.1.2 bug
+    (KeyError: 'audio_bitrate' when audio bitrate is missing from metadata).
+    If the source has no audio track, generates a short silent WAV so that
+    Whisper still receives a valid input without crashing the pipeline.
     """
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     out_path = str(TEMP_DIR / f"{job_id}.wav")
-    
+
+    cmd = [
+        _FFMPEG,
+        "-y",               # overwrite if exists
+        "-i", source_path,
+        "-vn",              # no video
+        "-acodec", "pcm_s16le",
+        "-ar", "16000",     # 16 kHz sample rate for Whisper
+        "-ac", "1",         # mono
+        out_path,
+    ]
+
     try:
-        # AudioFileClip works for both video and audio files
-        # and is more reliable for audio-only streams like those from yt-dlp
-        with mp.AudioFileClip(source_path) as clip:
-            # Write audio with specific params for Whisper
-            # Use a temporary name for audio write to avoid conflicts if needed,
-            # but job_id.wav should be unique already.
-            clip.write_audiofile(
-                out_path, 
-                fps=16000, 
-                nbytes=2, 
-                codec='pcm_s16le', 
-                ffmpeg_params=["-ac", "1"], 
-                logger=None
-            )
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            err = result.stderr.decode("utf-8", errors="replace")
+            # Check if failure is due to no audio stream in the source file
+            if "does not contain any stream" in err or "Invalid argument" in err:
+                print(f"[ingest] Source has no audio track — generating 1 s silent WAV for {job_id}")
+                silent_cmd = [
+                    _FFMPEG, "-y",
+                    "-f", "lavfi",
+                    "-i", "anullsrc=channel_layout=mono:sample_rate=16000",
+                    "-t", "1",
+                    "-acodec", "pcm_s16le",
+                    out_path,
+                ]
+                subprocess.run(
+                    silent_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=30,
+                    check=True,
+                )
+            else:
+                raise RuntimeError(f"ffmpeg failed (code {result.returncode}): {err[-800:]}")
+        if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+            raise RuntimeError(f"ffmpeg produced no output file at {out_path}")
         return out_path
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Audio extraction timed out after 5 minutes")
+    except RuntimeError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Audio extraction error: {str(e)}") from e
 

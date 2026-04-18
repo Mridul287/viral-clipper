@@ -5,10 +5,12 @@ import {
   Play, Pause, SkipBack, SkipForward, Maximize, Mic,
   Activity, Zap, Target, BarChart2, MessageSquare, FastForward,
   Film, Download, Share2, Flame, Scissors, MoreHorizontal, Link,
-  AlertCircle, Wifi, WifiOff, Cpu, Repeat2
+  AlertCircle, Wifi, WifiOff, Cpu, Repeat2, Smartphone
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import VideoAnalysisDashboard from './VideoAnalysisDashboard';
+import LandingPageView from './LandingPageView';
+import ReframeView from './ReframeView';
 
 // ---------------------------------------------------------------------------
 // API helper — all requests go through Vite's /api proxy → localhost:8000
@@ -1234,7 +1236,7 @@ const SettingsView = () => {
 // MAIN APP — wires job state through the entire flow
 // ---------------------------------------------------------------------------
 function App() {
-  const [currentView, setCurrentView] = useState('user-dashboard');
+  const [currentView, setCurrentView] = useState('landing-page');
   // jobId is passed from UploadView → AnalysisDashboardView → ClipsView
   const [activeJobId, setActiveJobId] = useState(null);
   const [videoInfo, setVideoInfo] = useState(null); // Store video file info
@@ -1250,6 +1252,10 @@ function App() {
   const handleProcessingComplete = () => {
     setCurrentView('clips');
   };
+
+  if (currentView === 'landing-page') {
+    return <LandingPageView onGetStarted={() => setCurrentView('user-dashboard')} />;
+  }
 
   return (
     <div className="app-container">
@@ -1271,6 +1277,10 @@ function App() {
           <a href="#" onClick={(e) => { e.preventDefault(); setCurrentView('upload'); }} className={`nav-item ${currentView === 'upload' || currentView === 'analysis' ? 'active' : ''}`}>
             <UploadCloud size={20} />
             <span>Upload</span>
+          </a>
+          <a href="#" onClick={(e) => { e.preventDefault(); setCurrentView('reframe'); }} className={`nav-item ${currentView === 'reframe' ? 'active' : ''}`}>
+            <Smartphone size={20} />
+            <span>Auto Reframe</span>
           </a>
           <a href="#" onClick={(e) => { e.preventDefault(); setCurrentView('clips'); }} className={`nav-item ${currentView === 'clips' ? 'active' : ''}`}>
             <Film size={20} />
@@ -1295,6 +1305,7 @@ function App() {
             <h1 className="brand-font" style={{ fontSize: '1.4rem', fontWeight: 600 }}>
               {currentView === 'user-dashboard' && 'Welcome'}
               {currentView === 'upload' && 'Upload Video'}
+              {currentView === 'reframe' && 'Auto Reframe'}
               {currentView === 'analysis' && 'Analysis Engine'}
               {currentView === 'clips' && 'AI Content Results'}
               {currentView === 'analyzer' && 'AI Video Analysis'}
@@ -1317,6 +1328,7 @@ function App() {
 
         {currentView === 'user-dashboard' && <UserDashboardView key="dashboard" onUploadClick={() => setCurrentView('upload')} />}
         {currentView === 'upload' && <UploadView key="upload" onUploadComplete={handleUploadComplete} />}
+        {currentView === 'reframe' && <ReframeView key="reframe" />}
         {currentView === 'analysis' && (
           <AnalysisDashboardView
             key="analysis"
